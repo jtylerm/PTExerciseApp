@@ -40,19 +40,51 @@ class Database {
     });
   }
 
+  // Migration: Add is_favorited column to existing databases
+  async migrateAddFavorited() {
+    return new Promise((resolve, reject) => {
+      // First check if column exists
+      this.db.get("PRAGMA table_info(Exercises)", (err, row) => {
+        if (err) {
+          reject(err);
+          return;
+        }
+      });
+
+      // Try to add the column (will fail silently if it already exists)
+      this.db.run(
+        `ALTER TABLE Exercises ADD COLUMN is_favorited INTEGER DEFAULT 0`,
+        (err) => {
+          if (err) {
+            // Column might already exist, check the error message
+            if (err.message.includes('duplicate column name')) {
+              console.log('✓ is_favorited column already exists');
+              resolve();
+            } else {
+              reject(err);
+            }
+          } else {
+            console.log('✓ Added is_favorited column to existing database');
+            resolve();
+          }
+        }
+      );
+    });
+  }
+
   // CRUD Operations
 
   // CREATE: Insert a new exercise
   async createExercise(exercise) {
-    const { name, type, muscle, equipment, difficulty, instructions } = exercise;
+    const { name, type, muscle, equipment, difficulty, instructions, is_favorited = false } = exercise;
     
     const sql = `
-      INSERT INTO Exercises (exercise_name, exercise_type, muscle, equipment, difficulty, instructions)
-      VALUES (?, ?, ?, ?, ?, ?)
+      INSERT INTO Exercises (exercise_name, exercise_type, muscle, equipment, difficulty, instructions, is_favorited)
+      VALUES (?, ?, ?, ?, ?, ?, ?)
     `;
     
     return new Promise((resolve, reject) => {
-      this.db.run(sql, [name, type, muscle, equipment, difficulty, instructions], function(err) {
+      this.db.run(sql, [name, type, muscle, equipment, difficulty, instructions, is_favorited ? 1 : 0], function(err) {
         if (err) {
           reject(err);
         } else {
@@ -85,6 +117,11 @@ class Database {
     if (filters.difficulty) {
       sql += ' AND difficulty = ?';
       params.push(filters.difficulty);
+    }
+
+    if (filters.is_favorited !== undefined) {
+      sql += ' AND is_favorited = ?';
+      params.push(filters.is_favorited ? 1 : 0);
     }
 
     sql += ' ORDER BY exercise_name ASC';
@@ -147,14 +184,20 @@ class Database {
 
   // UPDATE: Update an existing exercise
   async updateExercise(id, updates) {
-    const allowedFields = ['exercise_name', 'exercise_type', 'muscle', 'equipment', 'difficulty', 'instructions'];
+    const allowedFields = ['exercise_name', 'exercise_type', 'muscle', 'equipment', 'difficulty', 'instructions', 'is_favorited'];
     const fields = [];
     const values = [];
 
     for (const [key, value] of Object.entries(updates)) {
       if (allowedFields.includes(key)) {
-        fields.push(`${key} = ?`);
-        values.push(value);
+        // Convert boolean to integer for is_favorited
+        if (key === 'is_favorited') {
+          fields.push(`${key} = ?`);
+          values.push(value ? 1 : 0);
+        } else {
+          fields.push(`${key} = ?`);
+          values.push(value);
+        }
       }
     }
 
@@ -174,6 +217,41 @@ class Database {
           reject(err);
         } else {
           resolve({ changes: this.changes });
+        }
+      });
+    });
+  }
+
+  // NEW: Toggle favorite status for an exercise
+  async toggleFavorite(id) {
+    const sql = `
+      UPDATE Exercises 
+      SET is_favorited = CASE WHEN is_favorited = 1 THEN 0 ELSE 1 END,
+          last_updated = CURRENT_TIMESTAMP
+      WHERE id = ?
+    `;
+    
+    return new Promise((resolve, reject) => {
+      this.db.run(sql, [id], function(err) {
+        if (err) {
+          reject(err);
+        } else {
+          resolve({ changes: this.changes });
+        }
+      });
+    });
+  }
+
+  // NEW: Get all favorited exercises
+  async getFavorites() {
+    const sql = 'SELECT * FROM Exercises WHERE is_favorited = 1 ORDER BY exercise_name ASC';
+    
+    return new Promise((resolve, reject) => {
+      this.db.all(sql, [], (err, rows) => {
+        if (err) {
+          reject(err);
+        } else {
+          resolve(rows);
         }
       });
     });
@@ -207,6 +285,11 @@ class Database {
     if (filters.muscle) {
       sql += ' AND muscle = ?';
       params.push(filters.muscle);
+    }
+
+    if (filters.is_favorited !== undefined) {
+      sql += ' AND is_favorited = ?';
+      params.push(filters.is_favorited ? 1 : 0);
     }
 
     return new Promise((resolve, reject) => {

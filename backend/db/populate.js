@@ -1,11 +1,20 @@
 // backend/db/populate.js
-const path = require('path');
-require('dotenv').config({ path: path.join(__dirname, '../.env') });
 const axios = require('axios');
 const Database = require('./database');
+const path = require('path');
+require('dotenv').config({ path: path.join(__dirname, '../.env') });
 
 const NINJA_API_KEY = process.env.NINJA_API_KEY;
 const API_URL = 'https://api.api-ninjas.com/v1/exercises';
+
+// Verify API key is loaded
+if (!NINJA_API_KEY) {
+  console.error('❌ ERROR: NINJA_API_KEY not found in .env file!');
+  process.exit(1);
+}
+
+console.log('✓ API Key loaded successfully');
+console.log(`✓ API Key length: ${NINJA_API_KEY.length} characters\n`);
 
 // All muscle groups to fetch from
 const MUSCLE_GROUPS = [
@@ -22,72 +31,123 @@ const EXERCISE_TYPES = [
 
 async function fetchExercisesFromAPI() {
   const allExercises = new Map(); // Use Map to avoid duplicates by name
+  const errors = [];
+  const difficulties = ['beginner', 'intermediate', 'expert'];
   
-  console.log('Fetching exercises from API Ninjas...');
+  console.log('=== Starting Exercise Fetch from API Ninjas ===');
+  console.log('ℹ️  Free tier limitation: 10 results per query (no offset support)\n');
+  console.log('💡 Strategy: Fetch by muscle × difficulty combinations to maximize coverage\n');
   
-  // Fetch by muscle groups
+  // Fetch by muscle groups × difficulty levels
+  console.log('📋 Fetching by Muscle Groups × Difficulty Levels...\n');
+  
   for (const muscle of MUSCLE_GROUPS) {
-    try {
-      console.log(`Fetching ${muscle} exercises...`);
-      let offset = 0;
-      let hasMore = true;
-      
-      while (hasMore) {
+    console.log(`⏳ Fetching ${muscle} exercises...`);
+    
+    for (const difficulty of difficulties) {
+      try {
         const response = await axios.get(API_URL, {
           headers: { 'X-Api-Key': NINJA_API_KEY },
-          params: { muscle, offset }
+          params: { 
+            muscle,
+            difficulty
+          }
         });
         
-        if (response.data.length === 0) {
-          hasMore = false;
-        } else {
-          response.data.forEach(exercise => {
-            // Use name as key to avoid duplicates
-            if (!allExercises.has(exercise.name)) {
-              allExercises.set(exercise.name, exercise);
-            }
-          });
-          
-          offset += response.data.length;
-          
-          // API typically returns max 10 per request
-          if (response.data.length < 10) {
-            hasMore = false;
+        let newExercises = 0;
+        response.data.forEach(exercise => {
+          if (!allExercises.has(exercise.name)) {
+            allExercises.set(exercise.name, exercise);
+            newExercises++;
           }
-        }
+        });
         
-        // Rate limiting - small delay between requests
-        await new Promise(resolve => setTimeout(resolve, 100));
+        console.log(`   ${difficulty}: ${response.data.length} fetched (${newExercises} new)`);
+        
+        // Rate limiting
+        await new Promise(resolve => setTimeout(resolve, 150));
+        
+      } catch (error) {
+        console.error(`   ❌ ${difficulty} error:`, error.response?.status, error.response?.statusText || error.message);
+        errors.push({
+          category: 'muscle',
+          value: muscle,
+          difficulty,
+          status: error.response?.status,
+          message: error.response?.statusText || error.message,
+          data: error.response?.data
+        });
       }
-      
-      console.log(`Found ${allExercises.size} unique exercises so far...`);
-    } catch (error) {
-      console.error(`Error fetching ${muscle} exercises:`, error.message);
     }
+    
+    console.log(`   ✅ ${muscle} complete | Total unique: ${allExercises.size}\n`);
   }
   
-  // Also fetch by type to catch any exercises not categorized by muscle
+  console.log('\n📋 Fetching by Exercise Types × Difficulty Levels...\n');
+  
+  // Also fetch by type × difficulty to catch more exercises
   for (const type of EXERCISE_TYPES) {
-    try {
-      console.log(`Fetching ${type} exercises...`);
-      const response = await axios.get(API_URL, {
-        headers: { 'X-Api-Key': NINJA_API_KEY },
-        params: { type, offset: 0 }
-      });
-      
-      response.data.forEach(exercise => {
-        if (!allExercises.has(exercise.name)) {
-          allExercises.set(exercise.name, exercise);
-        }
-      });
-      
-      await new Promise(resolve => setTimeout(resolve, 100));
-    } catch (error) {
-      console.error(`Error fetching ${type} exercises:`, error.message);
+    console.log(`⏳ Fetching ${type} exercises...`);
+    
+    for (const difficulty of difficulties) {
+      try {
+        const response = await axios.get(API_URL, {
+          headers: { 'X-Api-Key': NINJA_API_KEY },
+          params: { 
+            type,
+            difficulty
+          }
+        });
+        
+        let newExercises = 0;
+        response.data.forEach(exercise => {
+          if (!allExercises.has(exercise.name)) {
+            allExercises.set(exercise.name, exercise);
+            newExercises++;
+          }
+        });
+        
+        console.log(`   ${difficulty}: ${response.data.length} fetched (${newExercises} new)`);
+        
+        await new Promise(resolve => setTimeout(resolve, 150));
+        
+      } catch (error) {
+        console.error(`   ❌ ${difficulty} error:`, error.response?.status, error.response?.statusText || error.message);
+        errors.push({
+          category: 'type',
+          value: type,
+          difficulty,
+          status: error.response?.status,
+          message: error.response?.statusText || error.message,
+          data: error.response?.data
+        });
+      }
     }
+    
+    console.log(`   ✅ ${type} complete | Total unique: ${allExercises.size}\n`);
   }
   
-  console.log(`\nTotal unique exercises found: ${allExercises.size}`);
+  console.log('\n=== Fetch Summary ===');
+  console.log(`✅ Total unique exercises found: ${allExercises.size}`);
+  
+  if (errors.length > 0) {
+    console.log(`\n⚠️  ${errors.length} errors occurred during fetch:\n`);
+    errors.forEach((err, i) => {
+      console.log(`${i + 1}. ${err.category}: ${err.value}`);
+      console.log(`   Status: ${err.status || 'N/A'}`);
+      console.log(`   Message: ${err.message}`);
+      if (err.offset !== undefined) {
+        console.log(`   Offset: ${err.offset}`);
+      }
+      if (err.data) {
+        console.log(`   Response data:`, JSON.stringify(err.data, null, 2));
+      }
+      console.log('');
+    });
+  } else {
+    console.log('✨ No errors during fetch!');
+  }
+  
   return Array.from(allExercises.values());
 }
 
@@ -95,6 +155,8 @@ async function populateDatabase() {
   const db = new Database();
   
   try {
+    console.log('\n=== Database Population Starting ===\n');
+    
     // Connect to database
     await db.connect();
     
@@ -104,7 +166,7 @@ async function populateDatabase() {
     // Check if database already has data
     const existingCount = await db.getExerciseCount();
     if (existingCount > 0) {
-      console.log(`\nDatabase already contains ${existingCount} exercises.`);
+      console.log(`\n⚠️  Database already contains ${existingCount} exercises.`);
       const readline = require('readline').createInterface({
         input: process.stdin,
         output: process.stdout
@@ -116,7 +178,7 @@ async function populateDatabase() {
       readline.close();
       
       if (answer.toLowerCase() !== 'y') {
-        console.log('Aborted.');
+        console.log('❌ Aborted.');
         await db.close();
         return;
       }
@@ -125,10 +187,17 @@ async function populateDatabase() {
     // Fetch exercises from API
     const exercises = await fetchExercisesFromAPI();
     
+    if (exercises.length === 0) {
+      console.log('\n❌ No exercises were fetched. Please check the errors above.');
+      await db.close();
+      return;
+    }
+    
     // Insert exercises into database
-    console.log('\nInserting exercises into database...');
+    console.log('\n=== Inserting Exercises into Database ===\n');
     let inserted = 0;
     let skipped = 0;
+    let failed = 0;
     
     for (const exercise of exercises) {
       try {
@@ -147,25 +216,31 @@ async function populateDatabase() {
           inserted++;
           
           if (inserted % 50 === 0) {
-            console.log(`Inserted ${inserted} exercises...`);
+            console.log(`✓ Inserted ${inserted} exercises...`);
           }
         } else {
           skipped++;
         }
       } catch (error) {
-        console.error(`Error inserting exercise "${exercise.name}":`, error.message);
+        console.error(`❌ Error inserting "${exercise.name}":`, error.message);
+        failed++;
       }
     }
     
-    console.log(`\n✅ Database population complete!`);
-    console.log(`   - Inserted: ${inserted} exercises`);
-    console.log(`   - Skipped (duplicates): ${skipped} exercises`);
-    console.log(`   - Total in database: ${await db.getExerciseCount()} exercises`);
+    const finalCount = await db.getExerciseCount();
+    
+    console.log('\n=== 🎉 Database Population Complete! ===');
+    console.log(`✅ Inserted: ${inserted} exercises`);
+    console.log(`⏭️  Skipped (duplicates): ${skipped} exercises`);
+    if (failed > 0) {
+      console.log(`❌ Failed: ${failed} exercises`);
+    }
+    console.log(`📊 Total in database: ${finalCount} exercises\n`);
     
     await db.close();
     
   } catch (error) {
-    console.error('Error populating database:', error);
+    console.error('\n❌ Fatal error populating database:', error);
     await db.close();
     process.exit(1);
   }
